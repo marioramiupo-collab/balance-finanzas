@@ -48,7 +48,11 @@
 <script type="text/plain" id="app-source">
 const { useState, useMemo, useEffect, useContext, createContext } = React;
 
-// ---------- Firebase: configuración real del proyecto finanzas-mario ----------
+// ---------- Firebase: sustituye esto por la configuración de TU proyecto ----------
+// La sacas de la consola de Firebase: Configuración del proyecto (el engranaje) ->
+// "Tus apps" -> el icono </> (app web) -> ahí te da este mismo objeto para copiar.
+// Este objeto NO es secreto (Firebase está diseñado así) — lo que protege tus datos
+// de verdad son las reglas de seguridad de Firestore, no ocultar esta configuración.
 const firebaseConfig = {
   apiKey: "AIzaSyD3C98fTXyZ6sVxLzXSzyhIl5ujl0r1fks",
   authDomain: "finanzas-mario.firebaseapp.com",
@@ -820,16 +824,22 @@ function TransactionsView() {
   const [modalOpen, setModalOpen] = useState(false);
   const [formInstance, setFormInstance] = useState(0);
 
+  // Todos los meses desde el primer movimiento (o el mes actual) hasta HOY,
+  // aunque estén vacíos: al entrar en un mes nuevo aparece solo en la lista.
   const monthOptions = useMemo(() => {
-    const seen = new Map();
+    const now = new Date();
+    const currentFirst = new Date(now.getFullYear(), now.getMonth(), 1);
+    let start = currentFirst;
     transactions.forEach((tx) => {
       const d = new Date(tx.date);
-      const key = monthKey(d);
-      if (!seen.has(key)) seen.set(key, d);
+      const first = new Date(d.getFullYear(), d.getMonth(), 1);
+      if (first < start) start = first;
     });
-    return Array.from(seen.entries())
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([value, date]) => ({ value, label: formatMonthYearLabel(date) }));
+    const options = [];
+    for (let d = currentFirst; d >= start; d = new Date(d.getFullYear(), d.getMonth() - 1, 1)) {
+      options.push({ value: monthKey(d), label: formatMonthYearLabel(d) });
+    }
+    return options;
   }, [transactions]);
 
   const filtered = useMemo(() => {
