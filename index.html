@@ -48,18 +48,14 @@
 <script type="text/plain" id="app-source">
 const { useState, useMemo, useEffect, useContext, createContext } = React;
 
-// ---------- Firebase: sustituye esto por la configuración de TU proyecto ----------
-// La sacas de la consola de Firebase: Configuración del proyecto (el engranaje) ->
-// "Tus apps" -> el icono </> (app web) -> ahí te da este mismo objeto para copiar.
-// Este objeto NO es secreto (Firebase está diseñado así) — lo que protege tus datos
-// de verdad son las reglas de seguridad de Firestore, no ocultar esta configuración.
+// ---------- Firebase: configuración real del proyecto finanzas-mario ----------
 const firebaseConfig = {
-  apiKey: "TU_API_KEY",
-  authDomain: "tu-proyecto.firebaseapp.com",
-  projectId: "tu-proyecto",
-  storageBucket: "tu-proyecto.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:xxxxxxxxxxxxxxxxxxxxxx",
+  apiKey: "AIzaSyD3C98fTXyZ6sVxLzXSzyhIl5ujl0r1fks",
+  authDomain: "finanzas-mario.firebaseapp.com",
+  projectId: "finanzas-mario",
+  storageBucket: "finanzas-mario.firebasestorage.app",
+  messagingSenderId: "1079950151733",
+  appId: "1:1079950151733:web:c4dee0e10de622a0fa217c",
 };
 
 const FIREBASE_NOT_CONFIGURED = firebaseConfig.apiKey === "TU_API_KEY";
