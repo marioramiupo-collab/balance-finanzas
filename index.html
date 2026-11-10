@@ -249,7 +249,7 @@ function FinanceProvider({ uid, children }) {
   }
 
   function deleteTransaction(id) {
-    docRef.update({ transactions: transactions.filter((t) => t.id !== id) });
+    return docRef.update({ transactions: transactions.filter((t) => t.id !== id) });
   }
 
   function setBudgetLimit(category, limit) {
@@ -267,7 +267,7 @@ function FinanceProvider({ uid, children }) {
   }
 
   function deleteAccount(id) {
-    docRef.update({ accounts: accounts.filter((a) => a.id !== id) });
+    return docRef.update({ accounts: accounts.filter((a) => a.id !== id) });
   }
 
   const activosDeclarados = useMemo(
@@ -484,10 +484,18 @@ const dateFormatter = new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: 
 
 function TransactionsTable({ transactions }) {
   const { deleteTransaction } = useFinance();
+  // Confirmación dentro de la página (window.confirm falla en móviles y apps instaladas).
+  const [pendingId, setPendingId] = useState(null);
+  const [error, setError] = useState(null);
 
-  function handleDelete(tx) {
-    const confirmed = window.confirm(`¿Eliminar "${tx.description}" (${formatCurrency(tx.amount)})? Esta acción no se puede deshacer.`);
-    if (confirmed) deleteTransaction(tx.id);
+  function confirmDelete(tx) {
+    setError(null);
+    Promise.resolve(deleteTransaction(tx.id))
+      .then(() => setPendingId(null))
+      .catch((err) => {
+        console.error("Error al eliminar:", err);
+        setError("No se pudo eliminar. Comprueba tu conexión e inténtalo de nuevo.");
+      });
   }
 
   return (
@@ -530,19 +538,40 @@ function TransactionsTable({ transactions }) {
                 {formatCurrency(tx.amount)}
               </td>
               <td className="whitespace-nowrap px-6 py-4 text-right">
-                <button
-                  type="button"
-                  onClick={() => handleDelete(tx)}
-                  aria-label={`Eliminar ${tx.description}`}
-                  className="rounded-md px-2 py-1 text-muted hover:bg-negative-soft hover:text-negative"
-                >
-                  Eliminar
-                </button>
+                {pendingId === tx.id ? (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="mr-1 text-xs text-muted">¿Seguro?</span>
+                    <button
+                      type="button"
+                      onClick={() => confirmDelete(tx)}
+                      className="rounded-md bg-negative px-2 py-1 text-xs font-medium text-white"
+                    >
+                      Sí, eliminar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setPendingId(null); setError(null); }}
+                      className="rounded-md border border-line px-2 py-1 text-xs text-ink hover:bg-paper"
+                    >
+                      No
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setError(null); setPendingId(tx.id); }}
+                    aria-label={`Eliminar ${tx.description}`}
+                    className="rounded-md px-2 py-1 text-muted hover:bg-negative-soft hover:text-negative"
+                  >
+                    Eliminar
+                  </button>
+                )}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      {error && <p className="px-6 py-3 text-sm text-negative">{error}</p>}
     </div>
   );
 }
@@ -1065,11 +1094,15 @@ function AccountModal({ open, onClose, title, initialName, initialValue, valueLa
 function AccountRow({ account }) {
   const { deleteAccount } = useFinance();
   const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState(null);
 
   function handleDelete() {
-    if (window.confirm(`¿Eliminar "${account.name}"? Esta acción no se puede deshacer.`)) {
-      deleteAccount(account.id);
-    }
+    setError(null);
+    Promise.resolve(deleteAccount(account.id)).catch((err) => {
+      console.error("Error al eliminar:", err);
+      setError("No se pudo eliminar. Inténtalo de nuevo.");
+    });
   }
 
   return (
@@ -1087,15 +1120,35 @@ function AccountRow({ account }) {
         >
           Editar
         </button>
-        <button
-          type="button"
-          onClick={handleDelete}
-          aria-label={`Eliminar ${account.name}`}
-          className="rounded-md px-2 py-1 text-sm text-muted hover:bg-negative-soft hover:text-negative"
-        >
-          Eliminar
-        </button>
+        {confirming ? (
+          <>
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="rounded-md bg-negative px-2 py-1 text-xs font-medium text-white"
+            >
+              Sí, eliminar
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="rounded-md border border-line px-2 py-1 text-xs text-ink hover:bg-paper"
+            >
+              No
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => { setError(null); setConfirming(true); }}
+            aria-label={`Eliminar ${account.name}`}
+            className="rounded-md px-2 py-1 text-sm text-muted hover:bg-negative-soft hover:text-negative"
+          >
+            Eliminar
+          </button>
+        )}
       </div>
+      {error && <span className="ml-2 text-xs text-negative">{error}</span>}
       <EditAccountModalWrapper account={account} open={editing} onClose={() => setEditing(false)} />
     </div>
   );
