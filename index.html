@@ -1249,9 +1249,16 @@ function AppShell({ userEmail }) {
 }
 
 function SignInScreen() {
+  const [error, setError] = useState(null);
   function handleSignIn() {
+    setError(null);
     const provider = new firebase.auth.GoogleAuthProvider();
-    firebase.auth().signInWithRedirect(provider);
+    firebase.auth().signInWithPopup(provider).catch((err) => {
+      console.error("Error al iniciar sesión:", err);
+      setError(err.code === "auth/popup-blocked"
+        ? "Tu navegador bloqueó la ventana de acceso. Permite ventanas emergentes para este sitio e inténtalo de nuevo."
+        : "No se pudo iniciar sesión. Inténtalo de nuevo.");
+    });
   }
 
   return (
@@ -1267,6 +1274,7 @@ function SignInScreen() {
       >
         Iniciar sesión con Google
       </button>
+      {error && <p className="max-w-xs text-sm text-negative">{error}</p>}
     </div>
   );
 }
