@@ -1,0 +1,1339 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Balance — Panel financiero</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          paper: "#f6f7f3",
+          surface: "#ffffff",
+          ink: "#17241f",
+          muted: "#6e7268",
+          line: "#e3e2d8",
+          brand: "#1f6f54",
+          "brand-soft": "#e3efe7",
+          gold: "#c98a3b",
+          negative: "#b3402f",
+          "negative-soft": "#f5e6e2",
+        },
+        fontFamily: {
+          display: ['"Iowan Old Style"', '"Palatino Linotype"', "Georgia", "serif"],
+        },
+      },
+    },
+  };
+</script>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+<style>
+  body { background-color: #f6f7f3; }
+</style>
+</head>
+<body class="h-full font-sans text-ink">
+<div id="root"></div>
+
+<script type="text/plain" id="app-source">
+const { useState, useMemo, useEffect, useContext, createContext } = React;
+
+// ---------- Firebase: sustituye esto por la configuración de TU proyecto ----------
+// La sacas de la consola de Firebase: Configuración del proyecto (el engranaje) ->
+// "Tus apps" -> el icono </> (app web) -> ahí te da este mismo objeto para copiar.
+// Este objeto NO es secreto (Firebase está diseñado así) — lo que protege tus datos
+// de verdad son las reglas de seguridad de Firestore, no ocultar esta configuración.
+const firebaseConfig = {
+  apiKey: "TU_API_KEY",
+  authDomain: "tu-proyecto.firebaseapp.com",
+  projectId: "tu-proyecto",
+  storageBucket: "tu-proyecto.appspot.com",
+  messagingSenderId: "000000000000",
+  appId: "1:000000000000:web:xxxxxxxxxxxxxxxxxxxxxx",
+};
+
+const FIREBASE_NOT_CONFIGURED = firebaseConfig.apiKey === "TU_API_KEY";
+
+if (!FIREBASE_NOT_CONFIGURED) {
+  firebase.initializeApp(firebaseConfig);
+}
+
+// ---------- Persistencia (localStorage real: esto ya no vive dentro de Claude) ----------
+
+function loadPersisted(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw) return JSON.parse(raw);
+  } catch (err) {
+    console.warn("No se pudo leer localStorage para", key, err);
+  }
+  return fallback;
+}
+
+function savePersisted(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.warn("No se pudo guardar en localStorage", key, err);
+  }
+}
+
+function makeId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return `tx-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// ---------- Datos y utilidades ----------
+
+const expenseCategories = ["Vivienda", "Alimentación", "Transporte", "Ocio", "Salud", "Otros gastos"];
+const incomeCategories = ["Nómina", "Honorarios", "Otros ingresos"];
+
+const currencyFormatter = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" });
+function formatCurrency(n) {
+  return currencyFormatter.format(n);
+}
+
+const monthFormatter = new Intl.DateTimeFormat("es-ES", { month: "short" });
+function formatMonthLabel(date) {
+  const label = monthFormatter.format(date).replace(".", "");
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+const monthYearFormatter = new Intl.DateTimeFormat("es-ES", { month: "long", year: "numeric" });
+function formatMonthYearLabel(date) {
+  const label = monthYearFormatter.format(date);
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function currentMonthDay(targetDay) {
+  const now = new Date();
+  const day = Math.min(targetDay, now.getDate());
+  return new Date(now.getFullYear(), now.getMonth(), day).toISOString();
+}
+function previousMonthDay(targetDay) {
+  const now = new Date();
+  const daysInPrev = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
+  const day = Math.min(targetDay, daysInPrev);
+  return new Date(now.getFullYear(), now.getMonth() - 1, day).toISOString();
+}
+function monthsAgoLabel(n) {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - n);
+  return formatMonthLabel(d);
+}
+function isSameMonth(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+}
+
+function buildInitialTransactions() {
+  return [
+    { id: "tx-1", date: currentMonthDay(1), description: "Nómina", category: "Nómina", type: "income", amount: 900 },
+    { id: "tx-2", date: currentMonthDay(3), description: "Honorarios freelance", category: "Honorarios", type: "income", amount: 300 },
+    { id: "tx-3", date: currentMonthDay(5), description: "Alquiler del piso", category: "Vivienda", type: "expense", amount: 550 },
+    { id: "tx-4", date: currentMonthDay(8), description: "Supermercado", category: "Alimentación", type: "expense", amount: 214.6 },
+    { id: "tx-5", date: currentMonthDay(12), description: "Suscripciones de streaming", category: "Ocio", type: "expense", amount: 15.98 },
+    { id: "tx-6", date: previousMonthDay(20), description: "Seguro del coche", category: "Transporte", type: "expense", amount: 38.5 },
+  ];
+}
+
+const initialAccounts = [
+  { id: "acc-checking", name: "Cuenta corriente", balance: 2150.32, kind: "cash" },
+  { id: "acc-savings", name: "Ahorros", balance: 4200, kind: "savings" },
+  { id: "acc-invest", name: "Fondo indexado", balance: 1780.5, kind: "investment" },
+  { id: "acc-credit", name: "Tarjeta de crédito", balance: 240.15, kind: "debt" },
+];
+
+const initialBudgets = {
+  Vivienda: 500,
+  Alimentación: 300,
+  Transporte: 100,
+  Ocio: 20,
+  Salud: 60,
+  "Otros gastos": 100,
+};
+
+const historicalMonths = [
+  { month: monthsAgoLabel(5), ingresos: 0, gastos: 0 },
+  { month: monthsAgoLabel(4), ingresos: 0, gastos: 0 },
+  { month: monthsAgoLabel(3), ingresos: 0, gastos: 0 },
+  { month: monthsAgoLabel(2), ingresos: 0, gastos: 0 },
+  { month: monthsAgoLabel(1), ingresos: 0, gastos: 0 },
+];
+
+function getBudgetStatus(spent, limit) {
+  if (limit <= 0) return spent > 0 ? "over" : "ok";
+  const ratio = spent / limit;
+  if (ratio >= 1) return "over";
+  if (ratio >= 0.75) return "warning";
+  return "ok";
+}
+
+const statusStyles = {
+  ok: { bar: "bg-brand", text: "text-brand", badge: "bg-brand-soft text-brand" },
+  warning: { bar: "bg-gold", text: "text-gold", badge: "bg-gold/15 text-gold" },
+  over: { bar: "bg-negative", text: "text-negative", badge: "bg-negative-soft text-negative" },
+};
+
+// ---------- Contexto global ----------
+
+const FinanceContext = createContext(null);
+function useFinance() {
+  const ctx = useContext(FinanceContext);
+  if (!ctx) throw new Error("useFinance debe usarse dentro de FinanceProvider");
+  return ctx;
+}
+
+function FinanceProvider({ uid, children }) {
+  const [accounts, setAccounts] = useState(null);
+  const [transactions, setTransactions] = useState(null);
+  const [budgets, setBudgets] = useState(null);
+
+  const docRef = useMemo(() => firebase.firestore().collection("users").doc(uid), [uid]);
+
+  // Escucha en vivo el documento del usuario: si cambia desde OTRO dispositivo
+  // (o desde este mismo), la interfaz se actualiza sola, sin recargar.
+  useEffect(() => {
+    const unsubscribe = docRef.onSnapshot((snap) => {
+      if (snap.exists) {
+        const data = snap.data();
+        setAccounts(data.accounts || []);
+        setTransactions(data.transactions || []);
+        setBudgets(data.budgets || {});
+      } else {
+        // Primera vez que este usuario inicia sesión: sembramos su documento
+        // con lo que ya hubiera en este navegador (o los datos de ejemplo si
+        // es la primera vez de todas). onSnapshot se volverá a disparar solo
+        // en cuanto se guarde, así que no hace falta tocar el estado aquí.
+        docRef.set({
+          accounts: loadPersisted("balance:accounts", initialAccounts),
+          transactions: loadPersisted("balance:transactions", buildInitialTransactions()),
+          budgets: loadPersisted("balance:budgets", initialBudgets),
+        });
+      }
+    });
+    return () => unsubscribe();
+  }, [docRef]);
+
+  const loading = accounts === null || transactions === null || budgets === null;
+
+  // El patrimonio "declarado" (accounts) ya NO lo tocan las transacciones.
+  // Son dos cosas separadas: lo que declaras que tienes, y lo que entra/sale
+  // por movimientos del día a día. El total que se ve en pantalla es la suma
+  // de ambos — así una cuenta se puede renombrar o borrar sin romper nada.
+  //
+  // Cada acción calcula el array/objeto nuevo y lo guarda en Firestore; el
+  // propio onSnapshot de arriba es quien actualiza la pantalla al confirmarse
+  // el guardado (aquí y en cualquier otro dispositivo con sesión iniciada).
+  function addTransaction(input) {
+    const amount = Math.abs(Number(input.amount)) || 0;
+    const transaction = {
+      id: makeId(),
+      date: new Date(input.date).toISOString(),
+      description: input.description || input.category,
+      category: input.category,
+      type: input.type,
+      amount,
+    };
+    docRef.update({ transactions: [transaction, ...transactions] });
+  }
+
+  function deleteTransaction(id) {
+    docRef.update({ transactions: transactions.filter((t) => t.id !== id) });
+  }
+
+  function setBudgetLimit(category, limit) {
+    docRef.update({ budgets: { ...budgets, [category]: Math.max(1, limit) } });
+  }
+
+  function addAccount(input) {
+    const account = { id: makeId(), name: input.name, balance: Math.max(0, input.balance), kind: input.kind };
+    docRef.update({ accounts: [...accounts, account] });
+  }
+
+  function updateAccount(id, input) {
+    const updated = accounts.map((a) => (a.id === id ? { ...a, name: input.name, balance: Math.max(0, input.balance) } : a));
+    docRef.update({ accounts: updated });
+  }
+
+  function deleteAccount(id) {
+    docRef.update({ accounts: accounts.filter((a) => a.id !== id) });
+  }
+
+  const activosDeclarados = useMemo(
+    () => (loading ? 0 : accounts.filter((a) => a.kind !== "debt").reduce((s, a) => s + a.balance, 0)),
+    [accounts, loading]
+  );
+  const deudaTotal = useMemo(
+    () => (loading ? 0 : accounts.filter((a) => a.kind === "debt").reduce((s, a) => s + a.balance, 0)),
+    [accounts, loading]
+  );
+  // Neto de TODAS las transacciones de siempre (no solo este mes): así el
+  // patrimonio acumula mes a mes en vez de resetearse.
+  const cashflowAcumulado = useMemo(
+    () => (loading ? 0 : transactions.reduce((s, t) => s + (t.type === "income" ? t.amount : -t.amount), 0)),
+    [transactions, loading]
+  );
+  const saldoTotal = activosDeclarados + cashflowAcumulado;
+  const patrimonioNeto = saldoTotal - deudaTotal;
+
+  const ingresosMes = useMemo(
+    () =>
+      loading
+        ? 0
+        : transactions
+            .filter((t) => t.type === "income" && isSameMonth(new Date(t.date), new Date()))
+            .reduce((s, t) => s + t.amount, 0),
+    [transactions, loading]
+  );
+  const gastosMes = useMemo(
+    () =>
+      loading
+        ? 0
+        : transactions
+            .filter((t) => t.type === "expense" && isSameMonth(new Date(t.date), new Date()))
+            .reduce((s, t) => s + t.amount, 0),
+    [transactions, loading]
+  );
+
+  const monthlyHistory = useMemo(
+    () => [...historicalMonths, { month: formatMonthLabel(new Date()), ingresos: ingresosMes, gastos: gastosMes }],
+    [ingresosMes, gastosMes]
+  );
+
+  const ultimasTransacciones = useMemo(
+    () => (loading ? [] : [...transactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5)),
+    [transactions, loading]
+  );
+
+  const budgetsProgress = useMemo(
+    () =>
+      loading
+        ? []
+        : Object.entries(budgets).map(([category, limit]) => {
+            const spent = transactions
+              .filter((t) => t.type === "expense" && t.category === category && isSameMonth(new Date(t.date), new Date()))
+              .reduce((s, t) => s + t.amount, 0);
+            return { category, limit, spent };
+          }),
+    [budgets, transactions, loading]
+  );
+
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <p className="animate-pulse text-sm text-muted">Cargando tus datos…</p>
+      </div>
+    );
+  }
+
+  const value = {
+    accounts,
+    transactions,
+    saldoTotal,
+    patrimonioNeto,
+    ingresosMes,
+    gastosMes,
+    monthlyHistory,
+    ultimasTransacciones,
+    budgetsProgress,
+    addTransaction,
+    deleteTransaction,
+    setBudgetLimit,
+    addAccount,
+    updateAccount,
+    deleteAccount,
+  };
+
+  return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>;
+}
+
+// ---------- Primitivos de UI ----------
+
+function Card({ className = "", children }) {
+  return <div className={`rounded-2xl border border-line bg-surface p-6 ${className}`}>{children}</div>;
+}
+
+function Badge({ className = "", children }) {
+  return (
+    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${className}`}>
+      {children}
+    </span>
+  );
+}
+
+function Progress({ value, barClassName = "bg-brand" }) {
+  const clamped = Math.min(100, Math.max(0, value));
+  return (
+    <div className="h-2 w-full overflow-hidden rounded-full bg-paper">
+      <div className={`h-full rounded-full transition-all ${barClassName}`} style={{ width: `${clamped}%` }} />
+    </div>
+  );
+}
+
+function Modal({ open, onClose, title, children }) {
+  useEffect(() => {
+    if (!open) return;
+    function handleKey(e) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-2xl border border-line bg-surface p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-5 flex items-center justify-between">
+          <h2 className="font-display text-xl text-ink">{title}</h2>
+          <button onClick={onClose} aria-label="Cerrar" className="rounded-md px-2 py-1 text-muted hover:bg-paper hover:text-ink">
+            ✕
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Gráfico (SVG a mano, sin librerías) ----------
+
+function IncomeExpenseChart({ data }) {
+  const width = 640;
+  const height = 220;
+  const padLeft = 8;
+  const padRight = 8;
+  const padTop = 10;
+  const padBottom = 24;
+  const chartWidth = width - padLeft - padRight;
+  const chartHeight = height - padTop - padBottom;
+  const maxValue = Math.max(...data.flatMap((d) => [d.ingresos, d.gastos]), 1);
+  const groupWidth = chartWidth / data.length;
+  const barWidth = Math.min(22, groupWidth * 0.3);
+
+  function barHeight(value) {
+    return (value / maxValue) * chartHeight;
+  }
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center gap-4 text-xs text-muted">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2 w-2 rounded-full bg-brand" /> Ingresos
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2 w-2 rounded-full bg-negative" /> Gastos
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full sm:h-64">
+        {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+          const y = padTop + chartHeight * (1 - t);
+          return <line key={t} x1={padLeft} x2={width - padRight} y1={y} y2={y} stroke="#e3e2d8" strokeWidth="1" />;
+        })}
+        {data.map((d, i) => {
+          const groupX = padLeft + i * groupWidth + groupWidth / 2;
+          const hIngresos = barHeight(d.ingresos);
+          const hGastos = barHeight(d.gastos);
+          return (
+            <g key={d.month}>
+              <rect
+                x={groupX - barWidth - 3}
+                y={padTop + chartHeight - hIngresos}
+                width={barWidth}
+                height={Math.max(hIngresos, 1)}
+                rx="3"
+                fill="#1f6f54"
+              />
+              <rect
+                x={groupX + 3}
+                y={padTop + chartHeight - hGastos}
+                width={barWidth}
+                height={Math.max(hGastos, 1)}
+                rx="3"
+                fill="#b3402f"
+              />
+              <text x={groupX} y={height - 6} textAnchor="middle" fontSize="12" fill="#6e7268">
+                {d.month}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+// ---------- Tabla de transacciones (compartida) ----------
+
+const dateFormatter = new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "short" });
+
+function TransactionsTable({ transactions }) {
+  const { deleteTransaction } = useFinance();
+
+  function handleDelete(tx) {
+    const confirmed = window.confirm(`¿Eliminar "${tx.description}" (${formatCurrency(tx.amount)})? Esta acción no se puede deshacer.`);
+    if (confirmed) deleteTransaction(tx.id);
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-sm">
+        <thead className="border-b border-line">
+          <tr>
+            <th className="px-6 py-3 text-left font-medium text-muted">Fecha</th>
+            <th className="px-4 py-3 text-left font-medium text-muted">Descripción</th>
+            <th className="px-4 py-3 text-left font-medium text-muted">Categoría</th>
+            <th className="px-4 py-3 text-right font-medium text-muted">Importe</th>
+            <th className="px-6 py-3 text-right font-medium text-muted">
+              <span className="sr-only">Eliminar</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {transactions.length === 0 && (
+            <tr>
+              <td colSpan={5} className="py-10 text-center text-muted">
+                No hay transacciones con estos filtros.
+              </td>
+            </tr>
+          )}
+          {transactions.map((tx) => (
+            <tr key={tx.id} className="hover:bg-paper">
+              <td className="whitespace-nowrap px-6 py-4 text-muted">{dateFormatter.format(new Date(tx.date))}</td>
+              <td className="px-4 py-4 text-ink">{tx.description}</td>
+              <td className="px-4 py-4">
+                <Badge className={tx.type === "income" ? "bg-brand-soft text-brand" : "bg-negative-soft text-negative"}>
+                  {tx.category}
+                </Badge>
+              </td>
+              <td
+                className={`whitespace-nowrap px-4 py-4 text-right font-display tabular-nums ${
+                  tx.type === "income" ? "text-brand" : "text-negative"
+                }`}
+              >
+                {tx.type === "income" ? "+" : "-"}
+                {formatCurrency(tx.amount)}
+              </td>
+              <td className="whitespace-nowrap px-6 py-4 text-right">
+                <button
+                  type="button"
+                  onClick={() => handleDelete(tx)}
+                  aria-label={`Eliminar ${tx.description}`}
+                  className="rounded-md px-2 py-1 text-muted hover:bg-negative-soft hover:text-negative"
+                >
+                  Eliminar
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------- Modales de formularios ----------
+
+function TransactionModal({ open, onClose, onSubmit }) {
+  const [type, setType] = useState("expense");
+  const [category, setCategory] = useState(expenseCategories[0]);
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+
+  const categories = type === "income" ? incomeCategories : expenseCategories;
+
+  function handleTypeChange(next) {
+    setType(next);
+    setCategory(next === "income" ? incomeCategories[0] : expenseCategories[0]);
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const parsed = Number(amount);
+    if (!parsed || parsed <= 0) return;
+    onSubmit({ type, category, amount: parsed, date, description: notes.trim() || category });
+    onClose();
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Nueva transacción">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-ink">Tipo</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => handleTypeChange("expense")}
+              className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+                type === "expense" ? "border-negative bg-negative-soft text-negative" : "border-line text-muted hover:bg-paper"
+              }`}
+            >
+              Gasto
+            </button>
+            <button
+              type="button"
+              onClick={() => handleTypeChange("income")}
+              className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+                type === "income" ? "border-brand bg-brand-soft text-brand" : "border-line text-muted hover:bg-paper"
+              }`}
+            >
+              Ingreso
+            </button>
+          </div>
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-ink">Categoría</label>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm"
+          >
+            {categories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-ink">Cantidad</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              required
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0,00"
+              className="h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-ink">Fecha</label>
+            <input
+              type="date"
+              required
+              value={date}
+              max={new Date().toISOString().slice(0, 10)}
+              onChange={(e) => setDate(e.target.value)}
+              className="h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm"
+            />
+          </div>
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-ink">Notas</label>
+          <textarea
+            rows={2}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Ej. Compra semanal en el Mercadona"
+            className="w-full resize-none rounded-lg border border-line bg-surface px-3 py-2 text-sm"
+          />
+        </div>
+        <div className="mt-2 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-paper"
+          >
+            Cancelar
+          </button>
+          <button type="submit" className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-paper hover:bg-ink/90">
+            Guardar transacción
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function BudgetModal({ category, currentLimit, onClose, onSubmit }) {
+  const [limit, setLimit] = useState(String(currentLimit || ""));
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const parsed = Number(limit);
+    if (!parsed || parsed <= 0) return;
+    onSubmit(parsed);
+  }
+
+  return (
+    <Modal open={!!category} onClose={onClose} title={category ?? ""}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-ink">Límite mensual</label>
+          <input
+            type="number"
+            min="1"
+            step="1"
+            required
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            className="h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm"
+          />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-paper"
+          >
+            Cancelar
+          </button>
+          <button type="submit" className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-paper hover:bg-ink/90">
+            Guardar límite
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// ---------- Vistas ----------
+
+function Row({ label, value, className = "" }) {
+  return (
+    <div className="flex items-center justify-between px-6 py-4">
+      <span className="text-sm text-muted">{label}</span>
+      <span className={`font-display text-lg tabular-nums text-ink ${className}`}>{value}</span>
+    </div>
+  );
+}
+
+function DashboardView() {
+  const {
+    saldoTotal,
+    patrimonioNeto,
+    ingresosMes,
+    gastosMes,
+    monthlyHistory,
+    ultimasTransacciones,
+    budgetsProgress,
+    addTransaction,
+  } = useFinance();
+  const [modalOpen, setModalOpen] = useState(false);
+  const [formInstance, setFormInstance] = useState(0);
+  const ahorro = ingresosMes - gastosMes;
+
+  const totalLimit = budgetsProgress.reduce((s, b) => s + b.limit, 0);
+  const totalSpent = budgetsProgress.reduce((s, b) => s + b.spent, 0);
+  const overallPct = totalLimit > 0 ? Math.round((totalSpent / totalLimit) * 100) : 0;
+  const overallStatus = getBudgetStatus(totalSpent, totalLimit);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="font-display text-2xl text-ink sm:text-3xl">Tus finanzas de un vistazo</h1>
+          <p className="mt-1 text-sm text-muted">{formatMonthYearLabel(new Date())}</p>
+        </div>
+        <button
+          onClick={() => { setFormInstance((n) => n + 1); setModalOpen(true); }}
+          className="inline-flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-paper hover:bg-ink/90"
+        >
+          + Nueva transacción
+        </button>
+      </div>
+
+      <section className="grid gap-4 lg:grid-cols-5">
+        <Card className="border-none bg-ink text-paper lg:col-span-3">
+          <p className="text-sm text-paper/60">Patrimonio neto</p>
+          <p className="mt-3 font-display text-4xl tabular-nums sm:text-5xl">{formatCurrency(patrimonioNeto)}</p>
+          <p className={`mt-3 text-sm ${ahorro >= 0 ? "text-brand-soft" : "text-negative-soft"}`}>
+            {ahorro >= 0 ? "+" : ""}
+            {formatCurrency(ahorro)} de ahorro este mes
+          </p>
+        </Card>
+        <Card className="p-0 lg:col-span-2">
+          <div className="divide-y divide-line">
+            <Row label="Saldo total" value={formatCurrency(saldoTotal)} />
+            <Row label="Ingresos del mes" value={formatCurrency(ingresosMes)} className="text-brand" />
+            <Row label="Gastos del mes" value={formatCurrency(gastosMes)} className="text-negative" />
+          </div>
+        </Card>
+      </section>
+
+      <Card>
+        <div className="mb-4 flex items-baseline justify-between">
+          <h2 className="font-display text-lg text-ink">Presupuestos</h2>
+          <span className="text-sm text-muted">
+            {formatCurrency(totalSpent)} de {formatCurrency(totalLimit)}
+          </span>
+        </div>
+        <Progress value={overallPct} barClassName={statusStyles[overallStatus].bar} />
+        <div className="mt-4 flex flex-wrap gap-2">
+          {budgetsProgress.map(({ category, limit, spent }) => {
+            const pct = limit > 0 ? Math.round((spent / limit) * 100) : 0;
+            const status = getBudgetStatus(spent, limit);
+            return (
+              <Badge key={category} className={statusStyles[status].badge}>
+                {category} ({pct}%)
+              </Badge>
+            );
+          })}
+        </div>
+      </Card>
+
+      <Card>
+        <div className="mb-4 flex items-baseline justify-between">
+          <h2 className="font-display text-lg text-ink">Ingresos frente a gastos</h2>
+          <span className="text-sm text-muted">Últimos 6 meses</span>
+        </div>
+        <IncomeExpenseChart data={monthlyHistory} />
+      </Card>
+
+      <Card className="p-0">
+        <div className="flex items-baseline justify-between px-6 pt-6">
+          <h2 className="font-display text-lg text-ink">Últimos movimientos</h2>
+        </div>
+        <TransactionsTable transactions={ultimasTransacciones} />
+      </Card>
+
+      <TransactionModal key={formInstance} open={modalOpen} onClose={() => setModalOpen(false)} onSubmit={addTransaction} />
+    </div>
+  );
+}
+
+const PAGE_SIZE = 5;
+function monthKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function TransactionsView() {
+  const { transactions, addTransaction } = useFinance();
+  const [monthFilter, setMonthFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [formInstance, setFormInstance] = useState(0);
+
+  const monthOptions = useMemo(() => {
+    const seen = new Map();
+    transactions.forEach((tx) => {
+      const d = new Date(tx.date);
+      const key = monthKey(d);
+      if (!seen.has(key)) seen.set(key, d);
+    });
+    return Array.from(seen.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([value, date]) => ({ value, label: formatMonthYearLabel(date) }));
+  }, [transactions]);
+
+  const filtered = useMemo(() => {
+    return transactions
+      .filter((tx) => {
+        if (typeFilter !== "all" && tx.type !== typeFilter) return false;
+        if (monthFilter !== "all" && monthKey(new Date(tx.date)) !== monthFilter) return false;
+        return true;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [transactions, typeFilter, monthFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageItems = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="font-display text-2xl text-ink sm:text-3xl">Transacciones</h1>
+        <p className="mt-1 text-sm text-muted">Todo tu historial de movimientos, en un solo lugar.</p>
+      </div>
+
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            value={monthFilter}
+            onChange={(e) => { setMonthFilter(e.target.value); setPage(1); }}
+            className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+          >
+            <option value="all">Todos los meses</option>
+            {monthOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={typeFilter}
+            onChange={(e) => { setTypeFilter(e.target.value); setPage(1); }}
+            className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+          >
+            <option value="all">Todos los tipos</option>
+            <option value="income">Ingresos</option>
+            <option value="expense">Gastos</option>
+          </select>
+        </div>
+        <button
+          onClick={() => { setFormInstance((n) => n + 1); setModalOpen(true); }}
+          className="inline-flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-paper hover:bg-ink/90"
+        >
+          + Nueva transacción
+        </button>
+      </div>
+
+      <Card className="p-0">
+        <TransactionsTable transactions={pageItems} />
+        <div className="flex items-center justify-between border-t border-line px-6 py-4">
+          <span className="text-sm text-muted">
+            {filtered.length === 0 ? "0 movimientos" : `Página ${currentPage} de ${totalPages} (${filtered.length} movimientos)`}
+          </span>
+          <div className="flex gap-2">
+            <button
+              disabled={currentPage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              aria-label="Página anterior"
+              className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink hover:bg-paper disabled:opacity-40"
+            >
+              ‹ Anterior
+            </button>
+            <button
+              disabled={currentPage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              aria-label="Página siguiente"
+              className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink hover:bg-paper disabled:opacity-40"
+            >
+              Siguiente ›
+            </button>
+          </div>
+        </div>
+      </Card>
+
+      <TransactionModal key={formInstance} open={modalOpen} onClose={() => setModalOpen(false)} onSubmit={addTransaction} />
+    </div>
+  );
+}
+
+function BudgetsView() {
+  const { budgetsProgress, setBudgetLimit } = useFinance();
+  const [editing, setEditing] = useState(null);
+  const editingLimit = editing ? (budgetsProgress.find((b) => b.category === editing)?.limit ?? 0) : 0;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="font-display text-2xl text-ink sm:text-3xl">Presupuestos</h1>
+        <p className="mt-1 text-sm text-muted">{formatMonthYearLabel(new Date())}</p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {budgetsProgress.map(({ category, limit, spent }) => {
+          const pct = limit > 0 ? Math.round((spent / limit) * 100) : 0;
+          const status = getBudgetStatus(spent, limit);
+          const remaining = limit - spent;
+          return (
+            <Card key={category}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-display text-lg text-ink">{category}</h3>
+                  <p className="mt-1 text-sm text-muted">
+                    {formatCurrency(spent)} de {formatCurrency(limit)}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setEditing(category)}
+                  aria-label={`Editar ${category}`}
+                  className="rounded-md px-2 py-1 text-sm text-muted hover:bg-paper hover:text-ink"
+                >
+                  Editar
+                </button>
+              </div>
+              <div className="mt-4">
+                <Progress value={pct} barClassName={statusStyles[status].bar} />
+                <div className="mt-2 flex items-center justify-between text-sm">
+                  <span className={`font-medium ${statusStyles[status].text}`}>{pct}%</span>
+                  <span className={remaining < 0 ? "text-negative" : "text-muted"}>
+                    {remaining < 0
+                      ? `Te has pasado ${formatCurrency(Math.abs(remaining))}`
+                      : `Te quedan ${formatCurrency(remaining)}`}
+                  </span>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      <BudgetModal
+        key={editing ?? "none"}
+        category={editing}
+        currentLimit={editingLimit}
+        onClose={() => setEditing(null)}
+        onSubmit={(limit) => {
+          if (editing) setBudgetLimit(editing, limit);
+          setEditing(null);
+        }}
+      />
+    </div>
+  );
+}
+
+// ---------- Patrimonio ----------
+
+const patrimonioCategories = [
+  { kind: "cash", label: "Cuentas" },
+  { kind: "savings", label: "Ahorros" },
+  { kind: "investment", label: "Inversiones" },
+  { kind: "property", label: "Propiedades" },
+  { kind: "debt", label: "Deudas" },
+];
+
+const kindLabels = {
+  cash: "cuenta",
+  savings: "cuenta de ahorros",
+  investment: "inversión",
+  property: "propiedad",
+  debt: "deuda",
+};
+
+function AccountModal({ open, onClose, title, initialName, initialValue, valueLabel, submitLabel, onSubmit }) {
+  const [name, setName] = useState(initialName);
+  const [value, setValue] = useState(initialValue);
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const parsed = Number(value);
+    if (!name.trim() || Number.isNaN(parsed) || parsed < 0) return;
+    onSubmit(name.trim(), parsed);
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={title}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-ink">Nombre</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Ej. Cuenta corriente"
+            required
+            className="h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm"
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-ink">{valueLabel}</label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            required
+            className="h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm"
+          />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-paper"
+          >
+            Cancelar
+          </button>
+          <button type="submit" className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-paper hover:bg-ink/90">
+            {submitLabel}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function AccountRow({ account }) {
+  const { deleteAccount } = useFinance();
+  const [editing, setEditing] = useState(false);
+
+  function handleDelete() {
+    if (window.confirm(`¿Eliminar "${account.name}"? Esta acción no se puede deshacer.`)) {
+      deleteAccount(account.id);
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-line px-4 py-3">
+      <span className="text-sm text-ink">{account.name}</span>
+      <div className="flex items-center gap-1">
+        <span className={`font-display tabular-nums ${account.kind === "debt" ? "text-negative" : "text-ink"}`}>
+          {formatCurrency(account.balance)}
+        </span>
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          aria-label={`Editar ${account.name}`}
+          className="rounded-md px-2 py-1 text-sm text-muted hover:bg-paper hover:text-ink"
+        >
+          Editar
+        </button>
+        <button
+          type="button"
+          onClick={handleDelete}
+          aria-label={`Eliminar ${account.name}`}
+          className="rounded-md px-2 py-1 text-sm text-muted hover:bg-negative-soft hover:text-negative"
+        >
+          Eliminar
+        </button>
+      </div>
+      <EditAccountModalWrapper account={account} open={editing} onClose={() => setEditing(false)} />
+    </div>
+  );
+}
+
+function EditAccountModalWrapper({ account, open, onClose }) {
+  const { updateAccount } = useFinance();
+  return (
+    <AccountModal
+      key={String(open)}
+      open={open}
+      onClose={onClose}
+      title={`Editar ${kindLabels[account.kind]}`}
+      initialName={account.name}
+      initialValue={String(account.balance)}
+      valueLabel={account.kind === "debt" ? "Cantidad que debes" : "Valor actual"}
+      submitLabel="Guardar"
+      onSubmit={(name, value) => {
+        updateAccount(account.id, { name, balance: value });
+        onClose();
+      }}
+    />
+  );
+}
+
+function AddAccountButton({ kind }) {
+  const { addAccount } = useFinance();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full rounded-lg border border-dashed border-line px-4 py-2.5 text-center text-sm font-medium text-muted hover:bg-paper hover:text-ink"
+      >
+        + Añadir {kindLabels[kind]}
+      </button>
+      <AccountModal
+        key={String(open)}
+        open={open}
+        onClose={() => setOpen(false)}
+        title={`Añadir ${kindLabels[kind]}`}
+        initialName=""
+        initialValue=""
+        valueLabel={kind === "debt" ? "Cantidad que debes" : "Valor actual"}
+        submitLabel="Añadir"
+        onSubmit={(name, value) => {
+          addAccount({ name, balance: value, kind });
+          setOpen(false);
+        }}
+      />
+    </>
+  );
+}
+
+function PatrimonioView() {
+  const { accounts, patrimonioNeto, ingresosMes, gastosMes } = useFinance();
+  const [activeKind, setActiveKind] = useState("cash");
+  const ahorroMensual = ingresosMes - gastosMes;
+  const items = accounts.filter((a) => a.kind === activeKind);
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <p className="text-sm text-muted">Patrimonio neto</p>
+        <p className="mt-2 font-display text-5xl tabular-nums text-ink sm:text-6xl">{formatCurrency(patrimonioNeto)}</p>
+        <p className={`mt-2 text-sm ${ahorroMensual >= 0 ? "text-brand" : "text-negative"}`}>
+          {ahorroMensual >= 0 ? "+" : ""}
+          {formatCurrency(ahorroMensual)} de ahorro este mes
+        </p>
+      </div>
+
+      <div>
+        <div className="flex flex-wrap gap-1 border-b border-line">
+          {patrimonioCategories.map((category) => {
+            const isActive = activeKind === category.kind;
+            return (
+              <button
+                key={category.kind}
+                type="button"
+                onClick={() => setActiveKind(category.kind)}
+                className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+                  isActive ? "border-ink text-ink" : "border-transparent text-muted hover:text-ink"
+                }`}
+              >
+                {category.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {items.map((account) => (
+            <AccountRow key={account.id} account={account} />
+          ))}
+          {items.length === 0 && <p className="py-6 text-center text-sm text-muted">Todavía no has añadido nada aquí.</p>}
+          <AddAccountButton kind={activeKind} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NavBar({ view, setView, userEmail }) {
+  const tabs = [
+    { id: "patrimonio", label: "Patrimonio" },
+    { id: "dashboard", label: "Panel" },
+    { id: "transactions", label: "Transacciones" },
+    { id: "budgets", label: "Presupuestos" },
+  ];
+
+  return (
+    <header className="border-b border-line bg-surface">
+      <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+        <span className="font-display text-xl text-ink">Balance</span>
+        <nav className="flex flex-wrap items-center gap-1">
+          {tabs.map((tab) => {
+            const active = view === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setView(tab.id)}
+                className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  active ? "bg-brand-soft text-brand" : "text-muted hover:bg-paper hover:text-ink"
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+          <span className="mx-1 hidden text-sm text-muted sm:inline">{userEmail}</span>
+          <button
+            onClick={() => firebase.auth().signOut()}
+            className="rounded-lg px-3 py-2 text-sm font-medium text-muted hover:bg-paper hover:text-negative"
+          >
+            Cerrar sesión
+          </button>
+        </nav>
+      </div>
+    </header>
+  );
+}
+
+// ---------- App ----------
+
+function AppShell({ userEmail }) {
+  const [view, setView] = useState("patrimonio");
+
+  return (
+    <div className="min-h-screen w-full bg-paper font-sans text-ink">
+      <NavBar view={view} setView={setView} userEmail={userEmail} />
+      <main className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
+        {view === "patrimonio" && <PatrimonioView />}
+        {view === "dashboard" && <DashboardView />}
+        {view === "transactions" && <TransactionsView />}
+        {view === "budgets" && <BudgetsView />}
+      </main>
+    </div>
+  );
+}
+
+function SignInScreen() {
+  function handleSignIn() {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    firebase.auth().signInWithRedirect(provider);
+  }
+
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-paper px-4 text-center">
+      <span className="font-display text-2xl text-ink">Balance</span>
+      <p className="max-w-xs text-sm text-muted">
+        Inicia sesión para ver y sincronizar tus finanzas en todos tus dispositivos.
+      </p>
+      <button
+        type="button"
+        onClick={handleSignIn}
+        className="rounded-lg bg-ink px-5 py-2.5 text-sm font-medium text-paper hover:bg-ink/90"
+      >
+        Iniciar sesión con Google
+      </button>
+    </div>
+  );
+}
+
+function SetupNeededScreen() {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-paper px-4 text-center">
+      <span className="font-display text-2xl text-ink">Balance</span>
+      <p className="max-w-sm text-sm text-muted">
+        Todavía falta configurar Firebase: sustituye el objeto{" "}
+        <code className="rounded bg-surface px-1 py-0.5 text-xs">firebaseConfig</code> al principio del archivo
+        por el de tu propio proyecto.
+      </p>
+    </div>
+  );
+}
+
+function AuthGate() {
+  const [user, setUser] = useState(undefined); // undefined = comprobando, null = sin sesión
+
+  useEffect(() => {
+    if (FIREBASE_NOT_CONFIGURED) return;
+    firebase.auth().getRedirectResult().catch((err) => console.error("Error al iniciar sesión:", err));
+    const unsubscribe = firebase.auth().onAuthStateChanged((u) => setUser(u));
+    return () => unsubscribe();
+  }, []);
+
+  if (FIREBASE_NOT_CONFIGURED) return <SetupNeededScreen />;
+
+  if (user === undefined) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <p className="animate-pulse text-sm text-muted">Cargando…</p>
+      </div>
+    );
+  }
+
+  if (user === null) return <SignInScreen />;
+
+  return (
+    <FinanceProvider uid={user.uid}>
+      <AppShell userEmail={user.email} />
+    </FinanceProvider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<AuthGate />);
+</script>
+
+<script>
+  // El script de arriba es type="text/plain": el navegador no lo ejecuta directamente.
+  // Lo compilamos aquí a mano forzando el runtime "classic" (React.createElement),
+  // que es el que funciona con React cargado como variable global por <script> — el
+  // runtime "automatic" (el que usa data-presets="react" por defecto) necesita
+  // import/export de módulos, que no existen en este contexto de scripts sueltos.
+  var source = document.getElementById("app-source").textContent;
+  var compiled = Babel.transform(source, {
+    presets: [["react", { runtime: "classic" }]],
+    filename: "balance-app.jsx",
+  }).code;
+  var script = document.createElement("script");
+  script.textContent = compiled;
+  document.body.appendChild(script);
+</script>
+</body>
+</html>
