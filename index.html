@@ -211,13 +211,13 @@ function FinanceProvider({ uid, children }) {
         setTransactions(data.transactions || []);
         setBudgets(data.budgets || {});
       } else {
-        // Primera vez que este usuario inicia sesión: sembramos su documento
-        // con lo que ya hubiera en este navegador (o los datos de ejemplo si
-        // es la primera vez de todas). onSnapshot se volverá a disparar solo
-        // en cuanto se guarde, así que no hace falta tocar el estado aquí.
+        // Primera vez que este usuario inicia sesión: creamos su documento
+        // VACÍO (sin cuentas ni movimientos de ejemplo), con los límites de
+        // presupuesto por defecto para que la pestaña Presupuestos funcione.
+        // onSnapshot se volverá a disparar solo en cuanto se guarde.
         docRef.set({
-          accounts: loadPersisted("balance:accounts", initialAccounts),
-          transactions: loadPersisted("balance:transactions", buildInitialTransactions()),
+          accounts: loadPersisted("balance:accounts", []),
+          transactions: loadPersisted("balance:transactions", []),
           budgets: loadPersisted("balance:budgets", initialBudgets),
         });
       }
